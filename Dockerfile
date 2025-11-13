@@ -1,6 +1,9 @@
 FROM python:3.12-slim-bookworm
 
 WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1
+
 COPY . .
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 

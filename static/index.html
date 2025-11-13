@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Scientist Challenge - API 测试页面</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .tab-button {
+            padding: 12px 24px;
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s;
+            backdrop-filter: blur(10px);
+        }
+
+        .tab-button:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .tab-button.active {
+            background: white;
+            color: #667eea;
+            font-weight: bold;
+        }
+
+        .tab-content {
+            display: none;
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        input[type="text"],
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea {
+            min-height: 120px;
+            resize: vertical;
+            font-family: monospace;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        button:hover {
+            transform: scale(1.05);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .output {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 2px solid #e0e0e0;
+            min-height: 200px;
+            max-height: 600px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .output.loading {
+            color: #667eea;
+            font-style: italic;
+        }
+
+        .output.error {
+            color: #dc3545;
+            background: #fff5f5;
+            border-color: #dc3545;
+        }
+
+        .output.success {
+            color: #28a745;
+        }
+
+        .clear-btn {
+            background: #6c757d;
+            margin-left: 10px;
+        }
+
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .file-input-label {
+            display: block;
+            padding: 12px;
+            background: #f8f9fa;
+            border: 2px dashed #e0e0e0;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .file-input-label:hover {
+            background: #e9ecef;
+            border-color: #667eea;
+        }
+
+        input[type="file"] {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+
+        .file-info {
+            margin-top: 10px;
+            padding: 10px;
+            background: #e9ecef;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔬 AI Scientist Challenge API 测试</h1>
+        
+        <div class="tabs">
+            <button class="tab-button active" onclick="switchTab('literature_review')">文献综述</button>
+            <button class="tab-button" onclick="switchTab('paper_qa')">论文问答</button>
+            <button class="tab-button" onclick="switchTab('ideation')">研究想法</button>
+            <button class="tab-button" onclick="switchTab('paper_review')">论文评审</button>
+        </div>
+
+        <!-- 文献综述 -->
+        <div id="literature_review" class="tab-content active">
+            <h2>📚 文献综述</h2>
+            <div class="form-group">
+                <label for="lr-query">研究主题：</label>
+                <input type="text" id="lr-query" placeholder="例如：transformer models的最新进展" value="transformer models">
+            </div>
+            <button onclick="callLiteratureReview()">生成文献综述</button>
+            <button class="clear-btn" onclick="clearOutput('lr-output')">清空</button>
+            <div id="lr-output" class="output"></div>
+        </div>
+
+        <!-- 论文问答 -->
+        <div id="paper_qa" class="tab-content">
+            <h2>❓ 论文问答</h2>
+            <div class="form-group">
+                <label for="qa-query">问题：</label>
+                <input type="text" id="qa-query" placeholder="例如：这篇论文的主要贡献是什么？" value="这篇论文的主要贡献是什么？">
+            </div>
+            <div class="form-group">
+                <label for="qa-pdf">PDF文件（Base64编码）：</label>
+                <div class="file-input-wrapper">
+                    <label class="file-input-label" for="qa-pdf-file">
+                        <span id="qa-file-name">点击选择PDF文件或直接粘贴Base64编码</span>
+                    </label>
+                    <input type="file" id="qa-pdf-file" accept=".pdf" onchange="handleFileSelect('qa-pdf-file', 'qa-pdf', 'qa-file-name')">
+                </div>
+                <textarea id="qa-pdf" placeholder="或者直接粘贴PDF的Base64编码字符串"></textarea>
+                <div id="qa-file-info" class="file-info" style="display: none;"></div>
+            </div>
+            <button onclick="callPaperQA()">提问</button>
+            <button class="clear-btn" onclick="clearOutput('qa-output')">清空</button>
+            <div id="qa-output" class="output"></div>
+        </div>
+
+        <!-- 研究想法 -->
+        <div id="ideation" class="tab-content">
+            <h2>💡 研究想法生成</h2>
+            <div class="form-group">
+                <label for="idea-query">研究领域/问题：</label>
+                <input type="text" id="idea-query" placeholder="例如：如何提高大语言模型的推理能力" value="如何提高大语言模型的推理能力">
+            </div>
+            <button onclick="callIdeation()">生成研究想法</button>
+            <button class="clear-btn" onclick="clearOutput('idea-output')">清空</button>
+            <div id="idea-output" class="output"></div>
+        </div>
+
+        <!-- 论文评审 -->
+        <div id="paper_review" class="tab-content">
+            <h2>📝 论文评审</h2>
+            <div class="form-group">
+                <label for="review-query">评审重点（可选）：</label>
+                <input type="text" id="review-query" placeholder="例如：重点关注方法的创新性" value="">
+            </div>
+            <div class="form-group">
+                <label for="review-pdf">PDF文件（Base64编码）：</label>
+                <div class="file-input-wrapper">
+                    <label class="file-input-label" for="review-pdf-file">
+                        <span id="review-file-name">点击选择PDF文件或直接粘贴Base64编码</span>
+                    </label>
+                    <input type="file" id="review-pdf-file" accept=".pdf" onchange="handleFileSelect('review-pdf-file', 'review-pdf', 'review-file-name')">
+                </div>
+                <textarea id="review-pdf" placeholder="或者直接粘贴PDF的Base64编码字符串"></textarea>
+                <div id="review-file-info" class="file-info" style="display: none;"></div>
+            </div>
+            <button onclick="callPaperReview()">开始评审</button>
+            <button class="clear-btn" onclick="clearOutput('review-output')">清空</button>
+            <div id="review-output" class="output"></div>
+        </div>
+    </div>
+
+    <script>
+        function switchTab(tabName) {
+            // 隐藏所有标签页
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // 显示选中的标签页
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        function clearOutput(outputId) {
+            document.getElementById(outputId).textContent = '';
+            document.getElementById(outputId).className = 'output';
+        }
+
+        function handleFileSelect(fileInputId, textareaId, fileNameId) {
+            const fileInput = document.getElementById(fileInputId);
+            const textarea = document.getElementById(textareaId);
+            const fileNameSpan = document.getElementById(fileNameId);
+            const fileInfo = document.getElementById(fileInputId.replace('-file', '-file-info'));
+
+            if (fileInput.files && fileInput.files[0]) {
+                const file = fileInput.files[0];
+                fileNameSpan.textContent = `已选择: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+                
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const base64 = e.target.result.split(',')[1]; // 移除 data:application/pdf;base64, 前缀
+                    textarea.value = base64;
+                    if (fileInfo) {
+                        fileInfo.style.display = 'block';
+                        fileInfo.textContent = `文件已加载，Base64长度: ${base64.length} 字符`;
+                    }
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        async function callLiteratureReview() {
+            const query = document.getElementById('lr-query').value.trim();
+            const output = document.getElementById('lr-output');
+            
+            if (!query) {
+                output.textContent = '错误: 请输入研究主题';
+                output.className = 'output error';
+                return;
+            }
+
+            output.textContent = '正在生成文献综述...\n';
+            output.className = 'output loading';
+
+            try {
+                const response = await fetch('/literature_review', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            if (data === '[DONE]') {
+                                output.className = 'output success';
+                                return;
+                            }
+                            try {
+                                const jsonData = JSON.parse(data);
+                                if (jsonData.object === 'error') {
+                                    output.textContent += `[ERROR] ${jsonData.message}\n`;
+                                    output.className = 'output error';
+                                } else if (jsonData.choices && jsonData.choices[0] && jsonData.choices[0].delta && jsonData.choices[0].delta.content) {
+                                    output.textContent += jsonData.choices[0].delta.content;
+                                }
+                            } catch (e) {
+                                // 如果不是JSON，直接显示（兼容旧格式）
+                                if (data.startsWith('[ERROR]')) {
+                                    output.textContent += data + '\n';
+                                    output.className = 'output error';
+                                } else {
+                                    output.textContent += data;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                output.textContent = `错误: ${error.message}`;
+                output.className = 'output error';
+            }
+        }
+
+        async function callPaperQA() {
+            const query = document.getElementById('qa-query').value.trim();
+            const pdfContent = document.getElementById('qa-pdf').value.trim();
+            const output = document.getElementById('qa-output');
+            
+            if (!query) {
+                output.textContent = '错误: 请输入问题';
+                output.className = 'output error';
+                return;
+            }
+            
+            if (!pdfContent) {
+                output.textContent = '错误: 请提供PDF内容（Base64编码）';
+                output.className = 'output error';
+                return;
+            }
+
+            output.textContent = '正在分析PDF并回答问题...\n';
+            output.className = 'output loading';
+
+            try {
+                const response = await fetch('/paper_qa', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query, pdf_content: pdfContent })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            if (data === '[DONE]') {
+                                output.className = 'output success';
+                                return;
+                            }
+                            try {
+                                const jsonData = JSON.parse(data);
+                                if (jsonData.object === 'error') {
+                                    output.textContent += `[ERROR] ${jsonData.message}\n`;
+                                    output.className = 'output error';
+                                } else if (jsonData.choices && jsonData.choices[0] && jsonData.choices[0].delta && jsonData.choices[0].delta.content) {
+                                    output.textContent += jsonData.choices[0].delta.content;
+                                }
+                            } catch (e) {
+                                // 如果不是JSON，直接显示（兼容旧格式）
+                                if (data.startsWith('[ERROR]')) {
+                                    output.textContent += data + '\n';
+                                    output.className = 'output error';
+                                } else {
+                                    output.textContent += data;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                output.textContent = `错误: ${error.message}`;
+                output.className = 'output error';
+            }
+        }
+
+        async function callIdeation() {
+            const query = document.getElementById('idea-query').value.trim();
+            const output = document.getElementById('idea-output');
+            
+            if (!query) {
+                output.textContent = '错误: 请输入研究领域或问题';
+                output.className = 'output error';
+                return;
+            }
+
+            output.textContent = '正在生成研究想法...\n';
+            output.className = 'output loading';
+
+            try {
+                const response = await fetch('/ideation', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            if (data === '[DONE]') {
+                                output.className = 'output success';
+                                return;
+                            }
+                            try {
+                                const jsonData = JSON.parse(data);
+                                if (jsonData.object === 'error') {
+                                    output.textContent += `[ERROR] ${jsonData.message}\n`;
+                                    output.className = 'output error';
+                                } else if (jsonData.choices && jsonData.choices[0] && jsonData.choices[0].delta && jsonData.choices[0].delta.content) {
+                                    output.textContent += jsonData.choices[0].delta.content;
+                                }
+                            } catch (e) {
+                                // 如果不是JSON，直接显示（兼容旧格式）
+                                if (data.startsWith('[ERROR]')) {
+                                    output.textContent += data + '\n';
+                                    output.className = 'output error';
+                                } else {
+                                    output.textContent += data;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                output.textContent = `错误: ${error.message}`;
+                output.className = 'output error';
+            }
+        }
+
+        async function callPaperReview() {
+            const query = document.getElementById('review-query').value.trim();
+            const pdfContent = document.getElementById('review-pdf').value.trim();
+            const output = document.getElementById('review-output');
+            
+            if (!pdfContent) {
+                output.textContent = '错误: 请提供PDF内容（Base64编码）';
+                output.className = 'output error';
+                return;
+            }
+
+            output.textContent = '正在评审论文...\n';
+            output.className = 'output loading';
+
+            try {
+                const response = await fetch('/paper_review', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ 
+                        query: query || undefined,
+                        pdf_content: pdfContent 
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6);
+                            if (data === '[DONE]') {
+                                output.className = 'output success';
+                                return;
+                            }
+                            try {
+                                const jsonData = JSON.parse(data);
+                                if (jsonData.object === 'error') {
+                                    output.textContent += `[ERROR] ${jsonData.message}\n`;
+                                    output.className = 'output error';
+                                } else if (jsonData.choices && jsonData.choices[0] && jsonData.choices[0].delta && jsonData.choices[0].delta.content) {
+                                    output.textContent += jsonData.choices[0].delta.content;
+                                }
+                            } catch (e) {
+                                // 如果不是JSON，直接显示（兼容旧格式）
+                                if (data.startsWith('[ERROR]')) {
+                                    output.textContent += data + '\n';
+                                    output.className = 'output error';
+                                } else {
+                                    output.textContent += data;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                output.textContent = `错误: ${error.message}`;
+                output.className = 'output error';
+            }
+        }
+    </script>
+</body>
+</html>
+
