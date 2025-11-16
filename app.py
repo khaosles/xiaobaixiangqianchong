@@ -2,7 +2,7 @@ import os
 import json
 import re
 import asyncio
-from typing import List
+from typing import List, Dict
 
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -60,7 +60,6 @@ def detect_language(text: str) -> str:
     if total_chars == 0:
         return 'en'
 
-    # 如果中文字符占比超过30%，认为是中文
     if chinese_chars / total_chars > 0.3:
         return 'zh'
 
@@ -160,7 +159,8 @@ async def literature_review(request: Request):
                             query=query,
                             max_results=7,
                             extract_pdf=False,
-                            sort_by='citations'
+                            sort_by='citations',
+                            sources=['openalex', 'crossref']
                         )
 
                         latest_papers, cited_papers = await asyncio.gather(
@@ -176,37 +176,48 @@ async def literature_review(request: Request):
                             print(f"[literature_review] 高引用文献搜索错误: {cited_papers}")
                             cited_papers = []
 
+                        latest_papers_filtered = [
+                            paper for paper in latest_papers
+                            if paper.get('abstract') and paper.get('abstract').strip()
+                        ]
+                        cited_papers_filtered = [
+                            paper for paper in cited_papers
+                            if paper.get('abstract') and paper.get('abstract').strip()
+                        ]
+
                         all_papers = []
                         seen_titles = set()
 
-                        for paper in latest_papers:
+                        for paper in cited_papers_filtered:
+                            title = paper.get('title', '').lower().strip()
+                            if title and title not in seen_titles:
+                                all_papers.append(paper)
+                                seen_titles.add(title)
+                        
+                        for paper in latest_papers_filtered:
                             title = paper.get('title', '').lower().strip()
                             if title and title not in seen_titles:
                                 all_papers.append(paper)
                                 seen_titles.add(title)
 
-                        for paper in cited_papers:
-                            title = paper.get('title', '').lower().strip()
-                            if title and title not in seen_titles and len(all_papers) < 10:
-                                all_papers.append(paper)
-                                seen_titles.add(title)
-
                         papers = all_papers
+                        
+                        cited_papers_set = {id(p) for p in cited_papers_filtered}
+                        cited_count = sum(1 for p in papers if id(p) in cited_papers_set)
+                        print(f"[literature_review] 最终文献列表包含 {cited_count} 篇高引用文献")
 
                         print(
-                            f"[literature_review] 找到 {len(latest_papers)} 篇最新文献和 {len(cited_papers)} 篇高引用文献，合并后共 {len(papers)} 篇")
+                            f"[literature_review] 找到 {len(latest_papers)} 篇最新文献（过滤后 {len(latest_papers_filtered)} 篇）和 {len(cited_papers)} 篇高引用文献（过滤后 {len(cited_papers_filtered)} 篇），合并去重后共 {len(papers)} 篇")
 
                         if papers:
                             papers_list = []
                             for idx, paper in enumerate(papers, 1):
-                                if not paper.get('abstract') or not paper.get('abstract').strip():
-                                    continue
-
                                 authors = paper.get('authors', [])[:3] if paper.get('authors') else []
                                 published = paper.get('published', '')
                                 year = ''
                                 if published:
-                                    year_match = re.search(r'(\d{4})', published)
+                                    published_str = str(published) if not isinstance(published, str) else published
+                                    year_match = re.search(r'(\d{4})', published_str)
                                     if year_match:
                                         year = year_match.group(1)
 
@@ -224,7 +235,7 @@ async def literature_review(request: Request):
                                     elif len(authors) == 2:
                                         second_author_parts = authors[1].split()
                                         second_surname = second_author_parts[-1] if len(second_author_parts) > 0 else \
-                                        authors[1]
+                                            authors[1]
                                         author_display = f"{author_surname} and {second_surname}"
                                     else:
                                         author_display = f"{author_surname} et al."
@@ -270,9 +281,6 @@ async def literature_review(request: Request):
                                 }
                                 papers_references.append(ref_info)
 
-                                if len(papers_references) >= 10:
-                                    break
-
                             if papers_list:
                                 if language == 'zh':
                                     papers_context = "\n\n提供的文献:\n\n" + "\n\n".join(papers_list)
@@ -286,20 +294,32 @@ async def literature_review(request: Request):
                 if language == 'zh':
                     if papers_context:
                         citation_rules = """
-**引用规则:**
+**引用规则（GB/T 7714格式）:**
 
+- **必须尽可能使用提供的全部文献。请仔细阅读所有提供的文献，并在综述中充分引用它们。**
 - 只能引用下面列出的文献。不要编造标题、作者、年份或研究成果。
+- **严禁引入没有给定的文献。所有引用必须来自提供的文献列表。**
 - 引用时可以使用两种格式：
-  1. 括号内引用格式：(作者, 年份) 或 (作者 et al., 年份)，例如："transformer模型在自然语言处理中取得了显著进展 (Chen et al., 2024)。"
-  2. 作者在前格式：作者 (年份) 或 作者 et al. (年份)，例如："Chen et al. (2024) 提出了..." 或 "根据 Chen (2024) 的研究..."
-- 在综述末尾，包含一个 **参考文献** 部分，按出现顺序列出所有引用的文献，使用以下格式：
+  1. 括号内引用格式：(作者, 年份) 或 (作者等, 年份)，例如："transformer模型在自然语言处理中取得了显著进展 (Chen等, 2024)。"
+  2. 作者在前格式：作者 (年份) 或 作者等 (年份)，例如："Chen等 (2024) 提出了..." 或 "根据 Chen (2024) 的研究..."
+- 在综述末尾，必须包含一个 **参考文献** 部分，按出现顺序列出所有引用的文献，严格使用GB/T 7714格式：
   
-  Chen et al. (2024). Diffusion Language Models Are Versatile Few-shot Learners. https://arxiv.org/abs/2403.xxxxx
+  示例格式：
+  CHEN X, WANG Y, ZHANG Z, et al. Diffusion Language Models Are Versatile Few-shot Learners[J/OL]. Journal Name, 2024. DOI: 10.xxxx/xxxx
   
-  Wang and Liu (2023). Latent Diffusion for Text Generation. https://aclanthology.org/2023.xxx.pdf
+  或：
+  CHEN X, WANG Y. Latent Diffusion for Text Generation[J/OL]. Conference Name, 2023. https://aclanthology.org/2023.xxx.pdf
+
+  GB/T 7714格式说明：
+  - 作者格式：姓在前（大写），名首字母缩写，如 CHEN X, WANG Y
+  - 多作者用逗号分隔，最后一个作者前用"，"连接
+  - 超过3个作者时，列出前3个作者，然后加"，et al."
+  - 文献类型标识：[J/OL]表示期刊/在线
+  - 格式：作者. 标题[J/OL]. 期刊名/会议名, 年份. DOI或URL
 
 - 如果文献在正文中没有被引用，不要将其包含在参考文献中。
 - 所有观点必须严格基于提供的摘要。
+- **如果给定的文献列表为空，则跳过参考文献部分，不要生成任何参考文献。**
 """
                     else:
                         citation_rules = ""
@@ -314,7 +334,7 @@ async def literature_review(request: Request):
 
 请提供一份结构化的文献综述，使用Markdown格式，包含以下部分：
 
-**重要提示：在撰写每个部分时，必须在适当的地方引用提供的文献。每个主要观点、研究发现、技术方法都应该有相应的文献引用支持。**
+**重要提示：必须尽可能使用提供的全部文献。在撰写每个部分时，必须在适当的地方引用提供的文献。每个主要观点、研究发现、技术方法都应该有相应的文献引用支持。请确保在综述中引用了大部分或全部提供的文献。**
 
 1. **研究背景**
    - 该研究领域的历史发展和演进过程
@@ -355,24 +375,37 @@ async def literature_review(request: Request):
 - **每个主要观点、研究发现、技术方法都必须有相应的文献引用支持**
 - 在适当的地方使用作者年份格式的文献引用，格式为：(作者, 年份) 或 作者 (年份)
 - 保持逻辑清晰，各部分之间衔接自然
+- 不要输出多余的空白行，保持格式紧凑
 - 在综述末尾自动生成参考文献部分，只包含实际引用的文献， 如果给定的文献列表为空，则跳过该步骤"""
                 else:
                     if papers_context:
                         citation_rules = """
-**Rules:**
+**Rules (GB/T 7714 format):**
 
+- **You MUST use as many of the provided papers as possible. Please carefully read all provided papers and cite them extensively in your review.**
 - Cite only papers listed below. DO NOT invent titles, authors, years, or findings.
+- **DO NOT introduce any papers that are not provided. All citations must come from the provided paper list.**
 - When citing, you can use two formats:
   1. Parenthetical citation: (Author, Year) or (Author et al., Year), for example: "transformer models have achieved significant progress in natural language processing (Chen et al., 2024)."
   2. Narrative citation: Author (Year) or Author et al. (Year), for example: "Chen et al. (2024) proposed..." or "According to Chen (2024)..."
-- At the end, include a **References** section listing all cited papers in order of appearance, using this format:
+- At the end, you MUST include a **References** section listing all cited papers in order of appearance, strictly using GB/T 7714 format:
 
-  Chen et al. (2024). Diffusion Language Models Are Versatile Few-shot Learners. https://arxiv.org/abs/2403.xxxxx
+  Example format:
+  CHEN X, WANG Y, ZHANG Z, et al. Diffusion Language Models Are Versatile Few-shot Learners[J/OL]. Journal Name, 2024. DOI: 10.xxxx/xxxx
+  
+  or:
+  CHEN X, WANG Y. Latent Diffusion for Text Generation[J/OL]. Conference Name, 2023. https://aclanthology.org/2023.xxx.pdf
 
-  Wang and Liu (2023). Latent Diffusion for Text Generation. https://aclanthology.org/2023.xxx.pdf
+  GB/T 7714 format notes:
+  - Author format: Surname FIRST (uppercase), given name initials, e.g., CHEN X, WANG Y
+  - Multiple authors separated by commas, last author connected with ", "
+  - More than 3 authors: list first 3 authors, then add ", et al."
+  - Document type identifier: [J/OL] means Journal/Online
+  - Format: Authors. Title[J/OL]. Journal/Conference Name, Year. DOI or URL
 
 - If a paper is not cited in the text, do NOT include it in References.
 - Base all claims strictly on the abstracts provided.
+- **If the provided papers list is empty, skip the References section entirely and do NOT generate any references.**
 """
                     else:
                         citation_rules = ""
@@ -387,7 +420,7 @@ async def literature_review(request: Request):
 
 Please provide a structured literature review in Markdown format covering:
 
-**IMPORTANT: When writing each section, you MUST cite the provided papers at appropriate places. Every major point, research finding, or technical method should be supported by relevant citations.**
+**IMPORTANT: You MUST use as many of the provided papers as possible. When writing each section, you MUST cite the provided papers at appropriate places. Every major point, research finding, or technical method should be supported by relevant citations. Please ensure that you cite most or all of the provided papers in your review.**
 
 1. **Background**
    - Historical development and evolution of the research field
@@ -428,6 +461,7 @@ Writing Requirements:
 - **Every major point, research finding, or technical method MUST be supported by relevant citations**
 - Use author-year format citations at appropriate places, in formats: (Author, Year) or Author (Year)
 - Maintain clear logic and natural transitions between sections
+- Do NOT output excessive blank lines, keep the format compact
 - Automatically generate a References section at the end, including only papers actually cited in the text. If the provided papers list is empty, skip this step"""
 
                 stream = await client.chat.completions.create(
@@ -473,20 +507,21 @@ Writing Requirements:
 
                             patterns = []
                             if year:
+                                year_str = str(year) if not isinstance(year, str) else year
                                 if multiple_authors:
-                                    patterns.append(f"({re.escape(author_surname)} et al\\.?,? {year})")
-                                    patterns.append(f"({re.escape(author_surname)} et al\\.?, {year})")
-                                    patterns.append(f"{re.escape(author_surname)} et al\\.? \\({year}\\)")
-                                    patterns.append(f"{re.escape(author_surname)} et al\\.? {year}")
-                                    patterns.append(f"（{re.escape(author_surname)} et al\\.?,? {year}）")
-                                    patterns.append(f"（{re.escape(author_surname)}等,? {year}）")
+                                    patterns.append(f"({re.escape(author_surname)} et al\\.?,? {year_str})")
+                                    patterns.append(f"({re.escape(author_surname)} et al\\.?, {year_str})")
+                                    patterns.append(f"{re.escape(author_surname)} et al\\.? \\({year_str}\\)")
+                                    patterns.append(f"{re.escape(author_surname)} et al\\.? {year_str}")
+                                    patterns.append(f"（{re.escape(author_surname)} et al\\.?,? {year_str}）")
+                                    patterns.append(f"（{re.escape(author_surname)}等,? {year_str}）")
                                 else:
-                                    patterns.append(f"({re.escape(author_surname)},? {year})")
-                                    patterns.append(f"({re.escape(author_surname)} {year})")
-                                    patterns.append(f"{re.escape(author_surname)} \\({year}\\)")
-                                    patterns.append(f"{re.escape(author_surname)} {year}")
-                                    patterns.append(f"（{re.escape(author_surname)},? {year}）")
-                                    patterns.append(f"（{re.escape(author_surname)} {year}）")
+                                    patterns.append(f"({re.escape(author_surname)},? {year_str})")
+                                    patterns.append(f"({re.escape(author_surname)} {year_str})")
+                                    patterns.append(f"{re.escape(author_surname)} \\({year_str}\\)")
+                                    patterns.append(f"{re.escape(author_surname)} {year_str}")
+                                    patterns.append(f"（{re.escape(author_surname)},? {year_str}）")
+                                    patterns.append(f"（{re.escape(author_surname)} {year_str}）")
                             else:
                                 if multiple_authors:
                                     patterns.append(f"{re.escape(author_surname)} et al\\.")

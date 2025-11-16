@@ -13,8 +13,11 @@ class LiteratureSearcher:
     """文献搜索器"""
 
     def __init__(self):
-        # 优化超时时间，提高响应速度
-        self.client = httpx.AsyncClient(timeout=10.0, limits=httpx.Limits(max_connections=20, max_keepalive_connections=10))
+        # 优化超时时间和连接池，提高响应速度
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=5.0),  # 连接超时5秒，总超时10秒
+            limits=httpx.Limits(max_connections=30, max_keepalive_connections=15)  # 增加连接数
+        )
 
     async def search_arxiv(self, query: str, max_results: int = 10) -> List[Dict]:
         """
@@ -170,7 +173,7 @@ class LiteratureSearcher:
             print(f"PubMed搜索错误: {e}")
             return []
 
-    async def search_openalex(self, query: str, max_results: int = 10, sort_by: str = "date") -> List[Dict]:
+    async def search_openalex(self, query: str, max_results: int = 10, sort_by: str = "date", include_references: bool = False) -> List[Dict]:
         """
         从OpenAlex搜索文献
         
@@ -178,6 +181,7 @@ class LiteratureSearcher:
             query: 搜索关键词
             max_results: 最大返回结果数
             sort_by: 排序方式，"date" 按时间排序，"citations" 按引用次数排序
+            include_references: 是否获取引用文献列表，默认为False
             
         Returns:
             文献列表
@@ -233,10 +237,11 @@ class LiteratureSearcher:
                     "referenced_works": []  # 引用的文献列表（OpenAlex ID）
                 }
                 
-                # 获取引用的文献信息（如果有）
-                referenced_works = work.get("referenced_works", [])
-                if referenced_works:
-                    paper["referenced_works"] = referenced_works[:50]  # 限制前50个引用
+                # 获取引用的文献信息（如果启用）
+                if include_references:
+                    referenced_works = work.get("referenced_works", [])
+                    if referenced_works:
+                        paper["referenced_works"] = referenced_works[:50]  # 限制前50个引用
                 
                 # 如果没有摘要，记录需要补充的文献
                 if not abstract:
@@ -254,28 +259,50 @@ class LiteratureSearcher:
                 
                 papers.append(paper)
             
-            # 批量获取缺失的摘要
+            # 批量获取缺失的摘要（使用多源备用方案）
             if works_data:
                 tasks = []
                 for paper, work in works_data:
+                    # 优先从OpenAlex获取摘要
                     if work.get("doi"):
-                        tasks.append(self._get_abstract_from_openalex_by_doi(work.get("doi")))
+                        tasks.append(("openalex", paper, work.get("doi")))
                     elif work.get("id"):
                         work_id = work.get("id").split("/")[-1] if "/" in work.get("id", "") else work.get("id")
-                        tasks.append(self._get_abstract_from_openalex_by_work_id(work_id))
+                        tasks.append(("openalex_id", paper, work_id))
                 
                 if tasks:
-                    # 限制并发数量，避免过多请求导致超时
-                    semaphore = asyncio.Semaphore(5)
-                    async def limited_task(task):
+                    # 优化并发数量，提高摘要获取速度
+                    semaphore = asyncio.Semaphore(10)  # 增加并发数从5到10
+                    async def fetch_abstract(task_item):
                         async with semaphore:
-                            return await task
+                            source_type, paper, identifier = task_item
+                            # 先尝试从OpenAlex获取
+                            if source_type == "openalex":
+                                abstract = await self._get_abstract_from_openalex_by_doi(identifier)
+                                if abstract:
+                                    return paper, abstract
+                                # 如果OpenAlex没有，直接使用多源备用方案（不重复请求OpenAlex）
+                                abstract = await self._get_abstract_by_doi(identifier)
+                                return paper, abstract
+                            elif source_type == "openalex_id":
+                                abstract = await self._get_abstract_from_openalex_by_work_id(identifier)
+                                if abstract:
+                                    return paper, abstract
+                                # 如果OpenAlex没有，且paper有doi，尝试多源备用方案
+                                if paper.get("doi"):
+                                    abstract = await self._get_abstract_by_doi(paper.get("doi"))
+                                    return paper, abstract
+                            return paper, ""
                     
-                    limited_tasks = [limited_task(task) for task in tasks]
-                    abstracts = await asyncio.gather(*limited_tasks, return_exceptions=True)
-                    for i, (paper, _) in enumerate(works_data):
-                        if i < len(abstracts) and isinstance(abstracts[i], str) and abstracts[i]:
-                            paper["abstract"] = abstracts[i]
+                    limited_tasks = [fetch_abstract(task_item) for task_item in tasks]
+                    results = await asyncio.gather(*limited_tasks, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, Exception):
+                            continue
+                        if isinstance(result, tuple) and len(result) == 2:
+                            paper, abstract = result
+                            if abstract:
+                                paper["abstract"] = abstract
             
             return papers
             
@@ -283,7 +310,7 @@ class LiteratureSearcher:
             print(f"OpenAlex搜索错误: {e}")
             return []
 
-    async def search_crossref(self, query: str, max_results: int = 10, sort_by: str = "date") -> List[Dict]:
+    async def search_crossref(self, query: str, max_results: int = 10, sort_by: str = "date", include_references: bool = False) -> List[Dict]:
         """
         从Crossref搜索文献
         
@@ -291,6 +318,7 @@ class LiteratureSearcher:
             query: 搜索关键词
             max_results: 最大返回结果数
             sort_by: 排序方式，"date" 按时间排序，"citations" 按引用次数排序（Crossref不支持，使用relevance）
+            include_references: 是否获取引用文献列表，默认为False
             
         Returns:
             文献列表
@@ -341,15 +369,16 @@ class LiteratureSearcher:
                     "referenced_works": []  # 引用的文献列表
                 }
                 
-                # Crossref API中的引用文献信息在reference字段中
-                references = item.get("reference", [])
-                if references:
-                    referenced_dois = []
-                    for ref in references[:50]:  # 限制前50个引用
-                        ref_doi = ref.get("DOI", "")
-                        if ref_doi:
-                            referenced_dois.append(ref_doi)
-                    paper["referenced_works"] = referenced_dois
+                # Crossref API中的引用文献信息在reference字段中（如果启用）
+                if include_references:
+                    references = item.get("reference", [])
+                    if references:
+                        referenced_dois = []
+                        for ref in references[:50]:  # 限制前50个引用
+                            ref_doi = ref.get("DOI", "")
+                            if ref_doi:
+                                referenced_dois.append(ref_doi)
+                        paper["referenced_works"] = referenced_dois
                 
                 if paper["doi"]:
                     paper["url"] = f"https://doi.org/{paper['doi']}"
@@ -359,20 +388,32 @@ class LiteratureSearcher:
                 if not abstract and paper.get("doi"):
                     crossref_papers.append(paper)
             
-            # 批量通过DOI从OpenAlex获取摘要（限制并发）
+            # 批量通过DOI获取摘要（使用多源备用方案）
             if crossref_papers:
-                tasks = [self._get_abstract_from_openalex_by_doi(p.get("doi")) for p in crossref_papers]
-                # 限制并发数量
-                semaphore = asyncio.Semaphore(5)
-                async def limited_task(task):
+                # 优化并发数量，提高摘要获取速度
+                semaphore = asyncio.Semaphore(10)  # 增加并发数从5到10
+                async def fetch_abstract_for_crossref(paper):
                     async with semaphore:
-                        return await task
+                        doi = paper.get("doi")
+                        if not doi:
+                            return paper, ""
+                        # 先尝试从OpenAlex获取摘要
+                        abstract = await self._get_abstract_from_openalex_by_doi(doi)
+                        if abstract:
+                            return paper, abstract
+                        # 如果OpenAlex没有，使用多源备用方案（Crossref、Semantic Scholar、PubMed）
+                        abstract = await self._get_abstract_by_doi(doi)
+                        return paper, abstract
                 
-                limited_tasks = [limited_task(task) for task in tasks]
-                abstracts = await asyncio.gather(*limited_tasks, return_exceptions=True)
-                for i, paper in enumerate(crossref_papers):
-                    if i < len(abstracts) and isinstance(abstracts[i], str) and abstracts[i]:
-                        paper["abstract"] = abstracts[i]
+                limited_tasks = [fetch_abstract_for_crossref(paper) for paper in crossref_papers]
+                results = await asyncio.gather(*limited_tasks, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception):
+                        continue
+                    if isinstance(result, tuple) and len(result) == 2:
+                        paper, abstract = result
+                        if abstract:
+                            paper["abstract"] = abstract
             
             return papers
             
@@ -476,7 +517,7 @@ class LiteratureSearcher:
         
         try:
             openalex_url = f"https://api.openalex.org/works/doi:{doi}"
-            openalex_response = await self.client.get(openalex_url, timeout=3.0)  # 减少超时时间
+            openalex_response = await self.client.get(openalex_url, timeout=5.0)  # 优化超时时间
             if openalex_response.status_code == 200:
                 openalex_data = openalex_response.json()
                 return self._extract_abstract_from_openalex_data(openalex_data)
@@ -499,7 +540,7 @@ class LiteratureSearcher:
         
         try:
             detail_url = f"https://api.openalex.org/works/{work_id}"
-            detail_response = await self.client.get(detail_url, timeout=3.0)  # 减少超时时间
+            detail_response = await self.client.get(detail_url, timeout=5.0)  # 优化超时时间
             if detail_response.status_code == 200:
                 detail_data = detail_response.json()
                 return self._extract_abstract_from_openalex_data(detail_data)
@@ -568,39 +609,81 @@ class LiteratureSearcher:
         if not normalized_doi:
             return ""
         
-        # 尝试从Crossref获取摘要
-        try:
-            crossref_url = f"https://api.crossref.org/works/{normalized_doi}"
-            crossref_response = await self.client.get(crossref_url, timeout=5.0)
-            
-            if crossref_response.status_code == 200:
-                crossref_data = crossref_response.json()
-                message = crossref_data.get("message", {})
-                
-                # 提取摘要
-                abstract_data = message.get("abstract")
-                if abstract_data:
-                    if isinstance(abstract_data, str):
-                        return abstract_data
-                    elif isinstance(abstract_data, dict):
-                        abstract_text = abstract_data.get("text", "")
-                        if abstract_text:
-                            return abstract_text
-        except Exception as e:
-            pass
+        # 尝试从Crossref获取摘要（优化：并行请求多个源，第一个成功即返回）
+        tasks = []
         
-        # 尝试从Semantic Scholar获取摘要（需要API key，但也可以不用）
+        # Crossref任务
+        async def fetch_crossref():
+            try:
+                crossref_url = f"https://api.crossref.org/works/{normalized_doi}"
+                crossref_response = await self.client.get(crossref_url, timeout=4.0)
+                if crossref_response.status_code == 200:
+                    crossref_data = crossref_response.json()
+                    message = crossref_data.get("message", {})
+                    abstract_data = message.get("abstract")
+                    if abstract_data:
+                        if isinstance(abstract_data, str):
+                            return abstract_data
+                        elif isinstance(abstract_data, dict):
+                            abstract_text = abstract_data.get("text", "")
+                            if abstract_text:
+                                return abstract_text
+            except:
+                pass
+            return None
+        
+        # Semantic Scholar任务
+        async def fetch_semantic_scholar():
+            try:
+                ss_url = f"https://api.semanticscholar.org/v1/paper/{normalized_doi}"
+                ss_response = await self.client.get(ss_url, timeout=4.0)
+                if ss_response.status_code == 200:
+                    ss_data = ss_response.json()
+                    abstract = ss_data.get("abstract", "")
+                    if abstract:
+                        return abstract
+            except:
+                pass
+            return None
+        
+        # 并行请求Crossref和Semantic Scholar，第一个成功即返回（优化性能）
         try:
-            # Semantic Scholar API（不需要API key，但有rate limit）
-            ss_url = f"https://api.semanticscholar.org/v1/paper/{normalized_doi}"
-            ss_response = await self.client.get(ss_url, timeout=5.0)
+            # 创建任务
+            crossref_task = asyncio.create_task(fetch_crossref())
+            ss_task = asyncio.create_task(fetch_semantic_scholar())
             
-            if ss_response.status_code == 200:
-                ss_data = ss_response.json()
-                abstract = ss_data.get("abstract", "")
-                if abstract:
-                    return abstract
-        except Exception as e:
+            # 使用asyncio.wait，第一个完成且成功的即返回
+            done, pending = await asyncio.wait(
+                [crossref_task, ss_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # 检查已完成的任务
+            for task in done:
+                try:
+                    result = await task
+                    if result:
+                        # 取消其他任务
+                        for p in pending:
+                            p.cancel()
+                            try:
+                                await p
+                            except asyncio.CancelledError:
+                                pass
+                        return result
+                except Exception:
+                    pass
+            
+            # 如果第一个完成的任务没有结果，等待另一个
+            if pending:
+                for task in pending:
+                    try:
+                        result = await task
+                        if result:
+                            return result
+                    except Exception:
+                        pass
+        except Exception:
             pass
         
         # 如果DOI看起来像PubMed的，尝试从PubMed获取
@@ -695,8 +778,8 @@ class LiteratureSearcher:
                     
                     print(f"找到 {len(referenced_works)} 个引用文献")
                     
-                    # 批量获取引用的文献详情（限制并发）
-                    semaphore = asyncio.Semaphore(5)
+                    # 批量获取引用的文献详情（优化并发）
+                    semaphore = asyncio.Semaphore(10)  # 增加并发数从5到10
                     failed_count = 0
                     not_found_count = 0
                     
@@ -853,7 +936,7 @@ class LiteratureSearcher:
         
         # 2. 批量获取引用文献的详细信息（包括引用量）
         referenced_papers = []
-        semaphore = asyncio.Semaphore(10)  # 限制并发数
+        semaphore = asyncio.Semaphore(15)  # 优化：增加并发数从10到15
         
         async def fetch_reference_info(ref_id: str):
             """获取单个引用文献的详细信息"""
@@ -1012,7 +1095,8 @@ class LiteratureSearcher:
     async def search_and_extract(self, query: str, max_results: int = 10,
                                  extract_pdf: bool = True,
                                  sources: Optional[List[str]] = None,
-                                 sort_by: str = "date") -> List[Dict]:
+                                 sort_by: str = "date",
+                                 include_references: bool = False) -> List[Dict]:
         """
         搜索文献并提取内容
         
@@ -1023,6 +1107,7 @@ class LiteratureSearcher:
             sources: 要使用的数据源列表，可选值: ['arxiv', 'pubmed', 'openalex', 'crossref']
                     如果为None，则使用所有数据源
             sort_by: 排序方式，"date" 按时间排序，"citations" 按引用次数排序
+            include_references: 是否获取引用文献列表，默认为False（可提高搜索速度）
             
         Returns:
             包含完整内容的文献列表
@@ -1044,10 +1129,10 @@ class LiteratureSearcher:
             search_tasks.append(self.search_pubmed(query, max_results))
             source_names.append('PubMed')
         if 'openalex' in sources:
-            search_tasks.append(self.search_openalex(query, max_results, sort_by=sort_by))
+            search_tasks.append(self.search_openalex(query, max_results, sort_by=sort_by, include_references=include_references))
             source_names.append('OpenAlex')
         if 'crossref' in sources:
-            search_tasks.append(self.search_crossref(query, max_results, sort_by=sort_by))
+            search_tasks.append(self.search_crossref(query, max_results, sort_by=sort_by, include_references=include_references))
             source_names.append('Crossref')
 
         if search_tasks:
@@ -1108,24 +1193,36 @@ class LiteratureSearcher:
                     paper['pdf_text'] = None
                     paper['pdf_size'] = 0
 
-        # 补充缺失的摘要：对于没有摘要但有DOI的文献，批量从OpenAlex获取（限制并发）
+        # 补充缺失的摘要：对于没有摘要但有DOI的文献，批量使用多源备用方案（优化：增加并发数）
         papers_without_abstract = [p for p in all_papers if not p.get('abstract') and p.get('doi')]
         if papers_without_abstract:
             print(f"为 {len(papers_without_abstract)} 篇文献批量补充摘要...")
-            tasks = [self._get_abstract_from_openalex_by_doi(p.get('doi')) for p in papers_without_abstract]
-            # 限制并发数量，避免过多请求
-            semaphore = asyncio.Semaphore(5)
-            async def limited_task(task):
+            # 优化：使用多源备用方案，提高成功率
+            semaphore = asyncio.Semaphore(10)  # 增加并发数从5到10
+            async def fetch_abstract_multi_source(paper):
                 async with semaphore:
-                    return await task
+                    doi = paper.get('doi')
+                    if not doi:
+                        return paper, ""
+                    # 先尝试OpenAlex（快速）
+                    abstract = await self._get_abstract_from_openalex_by_doi(doi)
+                    if abstract:
+                        return paper, abstract
+                    # 如果OpenAlex没有，使用多源备用方案
+                    abstract = await self._get_abstract_by_doi(doi)
+                    return paper, abstract
             
-            limited_tasks = [limited_task(task) for task in tasks]
-            abstracts = await asyncio.gather(*limited_tasks, return_exceptions=True)
+            tasks = [fetch_abstract_multi_source(p) for p in papers_without_abstract]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
             success_count = 0
-            for i, paper in enumerate(papers_without_abstract):
-                if i < len(abstracts) and isinstance(abstracts[i], str) and abstracts[i]:
-                    paper['abstract'] = abstracts[i]
-                    success_count += 1
+            for result in results:
+                if isinstance(result, Exception):
+                    continue
+                if isinstance(result, tuple) and len(result) == 2:
+                    paper, abstract = result
+                    if abstract:
+                        paper['abstract'] = abstract
+                        success_count += 1
             if success_count > 0:
                 print(f"  ✓ 成功为 {success_count} 篇文献补充摘要")
 
