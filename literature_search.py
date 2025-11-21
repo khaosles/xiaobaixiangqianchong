@@ -19,24 +19,30 @@ class LiteratureSearcher:
             limits=httpx.Limits(max_connections=30, max_keepalive_connections=15)  # 增加连接数
         )
 
-    async def search_arxiv(self, query: str, max_results: int = 10) -> List[Dict]:
+    async def search_arxiv(self, query: str, max_results: int = 10, sort_by: str = "relevance") -> List[Dict]:
         """
         从arXiv搜索文献
         
         Args:
             query: 搜索关键词
             max_results: 最大返回结果数
+            sort_by: 排序方式，"relevance" 按相关性排序，"date" 按时间排序
             
         Returns:
             文献列表，每个包含title, authors, abstract, pdf_url等信息
         """
         try:
             url = "https://export.arxiv.org/api/query"
+            if sort_by == "date":
+                sort_param = "submittedDate"
+            else:
+                sort_param = "relevanceLastAuthorDate"
+            
             params = {
                 "search_query": f"all:{query}",
                 "start": 0,
                 "max_results": max_results,
-                "sortBy": "submittedDate",
+                "sortBy": sort_param,
                 "sortOrder": "descending"
             }
 
@@ -77,110 +83,14 @@ class LiteratureSearcher:
             print(f"arXiv搜索错误: {e}")
             return []
 
-    async def search_pubmed(self, query: str, max_results: int = 10) -> List[Dict]:
-        """
-        从PubMed搜索文献
-        
-        Args:
-            query: 搜索关键词
-            max_results: 最大返回结果数
-            
-        Returns:
-            文献列表
-        """
-        try:
-            search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-            search_params = {
-                "db": "pubmed",
-                "term": query,
-                "retmax": max_results,
-                "retmode": "json",
-                "sort": "pub_date"
-            }
-
-            search_response = await self.client.get(search_url, params=search_params)
-            search_response.raise_for_status()
-            search_data = search_response.json()
-
-            pmids = search_data.get('esearchresult', {}).get('idlist', [])
-            if not pmids:
-                return []
-
-            fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-            fetch_params = {
-                "db": "pubmed",
-                "id": ",".join(pmids),
-                "retmode": "xml"
-            }
-
-            fetch_response = await self.client.get(fetch_url, params=fetch_params)
-            fetch_response.raise_for_status()
-
-            root = ET.fromstring(fetch_response.text)
-            ns = {'': 'http://www.ncbi.nlm.nih.gov'}
-
-            papers = []
-            for article in root.findall('.//PubmedArticle'):
-                try:
-                    title_elem = article.find('.//ArticleTitle')
-                    title = title_elem.text if title_elem is not None else ''
-
-                    abstract_elem = article.find('.//AbstractText')
-                    abstract = abstract_elem.text if abstract_elem is not None else ''
-
-                    authors = []
-                    for author in article.findall('.//Author'):
-                        last_name = author.find('LastName')
-                        first_name = author.find('ForeName')
-                        if last_name is not None and first_name is not None:
-                            authors.append(f"{first_name.text} {last_name.text}")
-
-                    pmid_elem = article.find('.//PMID')
-                    pmid = pmid_elem.text if pmid_elem is not None else ''
-
-                    pub_date_elem = article.find('.//PubDate')
-                    year = ''
-                    if pub_date_elem is not None:
-                        year_elem = pub_date_elem.find('Year')
-                        if year_elem is not None:
-                            year = year_elem.text
-
-                    paper = {
-                        'source': 'PubMed',
-                        'title': title,
-                        'authors': authors,
-                        'abstract': abstract,
-                        'published': year,
-                        'pmid': pmid,
-                        'url': f"https://pubmed.ncbi.nlm.nih.gov/{pmid}" if pmid else None,
-                        'pdf_url': None,
-                        'doi': None,  # PubMed可能需要从其他字段获取
-                        'referenced_works': []  # PubMed API需要单独请求引用信息
-                    }
-                    
-                    # 尝试从PubMed记录中获取DOI
-                    doi_elem = article.find('.//ELocationID[@EIdType="doi"]')
-                    if doi_elem is not None:
-                        paper['doi'] = doi_elem.text
-                    papers.append(paper)
-                except Exception as e:
-                    print(f"解析PubMed文章错误: {e}")
-                    continue
-
-            return papers
-
-        except Exception as e:
-            print(f"PubMed搜索错误: {e}")
-            return []
-
-    async def search_openalex(self, query: str, max_results: int = 10, sort_by: str = "date", include_references: bool = False) -> List[Dict]:
+    async def search_openalex(self, query: str, max_results: int = 10, sort_by: str = "relevance", include_references: bool = False) -> List[Dict]:
         """
         从OpenAlex搜索文献
         
         Args:
             query: 搜索关键词
             max_results: 最大返回结果数
-            sort_by: 排序方式，"date" 按时间排序，"citations" 按引用次数排序
+            sort_by: 排序方式，"relevance" 按相关性排序，"date" 按时间排序，"citations" 按引用次数排序
             include_references: 是否获取引用文献列表，默认为False
             
         Returns:
@@ -188,17 +98,20 @@ class LiteratureSearcher:
         """
         try:
             url = "https://api.openalex.org/works"
-            # OpenAlex支持的排序方式
             if sort_by == "citations":
-                sort_param = "cited_by_count:desc"  # 按引用次数降序
+                sort_param = "cited_by_count:desc"
+            elif sort_by == "date":
+                sort_param = "publication_date:desc"
             else:
-                sort_param = "publication_date:desc"  # 按时间降序（默认）
+                sort_param = None
             
             params = {
                 "search": query,
-                "per_page": min(max_results, 200),  # OpenAlex限制每页最多200
-                "sort": sort_param
+                "per_page": min(max_results, 200),
+                'select': 'id,title,doi,publication_year,abstract_inverted_index'
             }
+            if sort_param:
+                params["sort"] = sort_param
             
             response = await self.client.get(url, params=params)
             response.raise_for_status()
@@ -310,14 +223,14 @@ class LiteratureSearcher:
             print(f"OpenAlex搜索错误: {e}")
             return []
 
-    async def search_crossref(self, query: str, max_results: int = 10, sort_by: str = "date", include_references: bool = False) -> List[Dict]:
+    async def search_crossref(self, query: str, max_results: int = 10, sort_by: str = "relevance", include_references: bool = False) -> List[Dict]:
         """
         从Crossref搜索文献
         
         Args:
             query: 搜索关键词
             max_results: 最大返回结果数
-            sort_by: 排序方式，"date" 按时间排序，"citations" 按引用次数排序（Crossref不支持，使用relevance）
+            sort_by: 排序方式，"relevance" 按相关性排序，"date" 按时间排序，"citations" 按引用次数排序
             include_references: 是否获取引用文献列表，默认为False
             
         Returns:
@@ -325,11 +238,12 @@ class LiteratureSearcher:
         """
         try:
             url = "https://api.crossref.org/works"
-            # Crossref支持的排序方式：relevance, date, is-referenced-by-count（引用次数）
             if sort_by == "citations":
-                sort_param = "is-referenced-by-count"  # 按引用次数排序
+                sort_param = "is-referenced-by-count"
+            elif sort_by == "date":
+                sort_param = "date"
             else:
-                sort_param = "date"  # 按时间排序
+                sort_param = "relevance"
             
             params = {
                 "query": query,
@@ -401,7 +315,7 @@ class LiteratureSearcher:
                         abstract = await self._get_abstract_from_openalex_by_doi(doi)
                         if abstract:
                             return paper, abstract
-                        # 如果OpenAlex没有，使用多源备用方案（Crossref、Semantic Scholar、PubMed）
+                        # 如果OpenAlex没有，使用多源备用方案（Crossref、Semantic Scholar）
                         abstract = await self._get_abstract_by_doi(doi)
                         return paper, abstract
                 
@@ -684,39 +598,6 @@ class LiteratureSearcher:
                     except Exception:
                         pass
         except Exception:
-            pass
-        
-        # 如果DOI看起来像PubMed的，尝试从PubMed获取
-        try:
-            # 先通过Crossref查找是否有PubMed ID
-            crossref_url = f"https://api.crossref.org/works/{normalized_doi}"
-            crossref_response = await self.client.get(crossref_url, timeout=5.0)
-            
-            if crossref_response.status_code == 200:
-                crossref_data = crossref_response.json()
-                message = crossref_data.get("message", {})
-                
-                # 查找PubMed ID
-                alternative_ids = message.get("alternative-id", [])
-                pmids = [pid for pid in alternative_ids if isinstance(pid, str) and pid.isdigit()]
-                
-                if pmids:
-                    # 通过PubMed ID获取摘要
-                    pmid = pmids[0]
-                    pubmed_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-                    pubmed_params = {
-                        "db": "pubmed",
-                        "id": pmid,
-                        "retmode": "xml"
-                    }
-                    
-                    pubmed_response = await self.client.get(pubmed_url, params=pubmed_params, timeout=5.0)
-                    if pubmed_response.status_code == 200:
-                        root = ET.fromstring(pubmed_response.text)
-                        abstract_elem = root.find('.//AbstractText')
-                        if abstract_elem is not None and abstract_elem.text:
-                            return abstract_elem.text.strip()
-        except Exception as e:
             pass
         
         return ""
@@ -1095,7 +976,7 @@ class LiteratureSearcher:
     async def search_and_extract(self, query: str, max_results: int = 10,
                                  extract_pdf: bool = True,
                                  sources: Optional[List[str]] = None,
-                                 sort_by: str = "date",
+                                 sort_by: str = "relevance",
                                  include_references: bool = False) -> List[Dict]:
         """
         搜索文献并提取内容
@@ -1104,9 +985,9 @@ class LiteratureSearcher:
             query: 搜索主题
             max_results: 每个数据源的最大结果数
             extract_pdf: 是否下载并提取PDF内容
-            sources: 要使用的数据源列表，可选值: ['arxiv', 'pubmed', 'openalex', 'crossref']
-                    如果为None，则使用所有数据源
-            sort_by: 排序方式，"date" 按时间排序，"citations" 按引用次数排序
+            sources: 要使用的数据源列表，可选值: ['arxiv', 'openalex', 'crossref']
+                    如果为None，则使用所有可用数据源
+            sort_by: 排序方式，"relevance" 按相关性排序（默认），"date" 按时间排序，"citations" 按引用次数排序
             include_references: 是否获取引用文献列表，默认为False（可提高搜索速度）
             
         Returns:
@@ -1115,7 +996,7 @@ class LiteratureSearcher:
         print(f"开始搜索主题: {query}, 排序方式: {sort_by}")
 
         if sources is None:
-            sources = ['arxiv', 'pubmed', 'openalex', 'crossref']
+            sources = ['arxiv', 'openalex', 'crossref']
         
         sources = [s.lower() for s in sources]
 
@@ -1123,11 +1004,8 @@ class LiteratureSearcher:
         source_names = []
         
         if 'arxiv' in sources:
-            search_tasks.append(self.search_arxiv(query, max_results))
+            search_tasks.append(self.search_arxiv(query, max_results, sort_by=sort_by))
             source_names.append('arXiv')
-        if 'pubmed' in sources:
-            search_tasks.append(self.search_pubmed(query, max_results))
-            source_names.append('PubMed')
         if 'openalex' in sources:
             search_tasks.append(self.search_openalex(query, max_results, sort_by=sort_by, include_references=include_references))
             source_names.append('OpenAlex')
@@ -1232,7 +1110,7 @@ class LiteratureSearcher:
     async def search_and_extract_with_top_references(self, query: str, max_results: int = 10,
                                                      extract_pdf: bool = True,
                                                      sources: Optional[List[str]] = None,
-                                                     sort_by: str = "date",
+                                                     sort_by: str = "relevance",
                                                      extract_top_cited_refs: bool = True,
                                                      top_cited_n: int = 10) -> Dict:
         """
@@ -1243,7 +1121,7 @@ class LiteratureSearcher:
             max_results: 每个数据源的最大结果数
             extract_pdf: 是否下载并提取PDF内容
             sources: 要使用的数据源列表
-            sort_by: 排序方式，"date" 按时间排序，"citations" 按引用次数排序
+            sort_by: 排序方式，"relevance" 按相关性排序（默认），"date" 按时间排序，"citations" 按引用次数排序
             extract_top_cited_refs: 是否提取引用量前n的引用文献
             top_cited_n: 返回引用量前n的引用文献数量
             
@@ -1291,8 +1169,8 @@ async def search_literature(query: str, max_results: int = 10,
         query: 搜索主题
         max_results: 每个数据源的最大结果数
         extract_pdf: 是否提取PDF内容
-        sources: 要使用的数据源列表，可选值: ['arxiv', 'pubmed', 'openalex', 'crossref']
-                如果为None，则使用所有数据源
+        sources: 要使用的数据源列表，可选值: ['arxiv', 'openalex', 'crossref']
+                如果为None，则使用所有可用数据源
         
     Returns:
         文献列表
@@ -1308,8 +1186,8 @@ async def search_literature(query: str, max_results: int = 10,
 if __name__ == "__main__":
     async def basic_search_demo():
         """leaf area index"""
-        query = "What are the latest advances in transformer models?"
-        results = await search_literature(query, max_results=3, extract_pdf=False)
+        query = "resnet"
+        results = await search_literature(query, max_results=3, extract_pdf=False, sources=['resnet'])
         print(f"\n找到 {len(results)} 篇文献:")
         for i, paper in enumerate(results, 1):
             print(f"\n{i}. {paper['title']}")
